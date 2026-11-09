@@ -26,7 +26,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=500_000)
     parser.add_argument("--envs", type=int, default=8)
-    parser.add_argument("--out", type=str, default="models/ppo_ebrake.zip")
+    parser.add_argument("--out", type=str, default="models/ppo_ebrake_v2.zip")
     args = parser.parse_args()
 
     out = Path(args.out)

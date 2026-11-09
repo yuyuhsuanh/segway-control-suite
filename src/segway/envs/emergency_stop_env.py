@@ -31,6 +31,7 @@ class EmergencyStopEnv(gym.Env):
         max_seconds: float = 10.0,
         v_range: tuple[float, float] = (0.3, 1.5),
         fall_angle: float = 1.2,
+        v_exit: float = 0.05,
     ):
         super().__init__()
         self.params = params or TWIPParams()
@@ -40,6 +41,7 @@ class EmergencyStopEnv(gym.Env):
         self.max_steps = int(max_seconds / dt_ctrl)
         self.v_range = v_range
         self.fall_angle = float(fall_angle)
+        self.v_exit = float(v_exit)
 
         self.lqr = build_controller("lqr", self.params.base)
         self.plant = MuJoCoTWIP(self.params)
@@ -88,10 +90,11 @@ class EmergencyStopEnv(gym.Env):
         x, _, _, theta, v, _, _ = state
 
         fell = abs(theta) > self.fall_angle
+        rolled_back = v < -self.v_exit
         reward = -abs(v) * self.dt_ctrl
-        if fell:
+        if fell or rolled_back:
             reward -= 50.0
 
-        terminated = fell
+        terminated = fell or rolled_back
         truncated = self._step >= self.max_steps
         return self._obs(state), float(reward), terminated, truncated, {"fell": fell, "v": v, "x": x}
