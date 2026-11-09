@@ -90,11 +90,12 @@ class EmergencyStopEnv(gym.Env):
         x, _, _, theta, v, _, _ = state
 
         fell = abs(theta) > self.fall_angle
-        rolled_back = v < -self.v_exit
         reward = -abs(v) * self.dt_ctrl
-        if fell or rolled_back:
+        if fell:
             reward -= 50.0
+        elif v < -self.v_exit:
+            reward -= 2.0   # per-step backward penalty; not terminal so episode continues
 
-        terminated = fell or rolled_back
+        terminated = fell
         truncated = self._step >= self.max_steps
         return self._obs(state), float(reward), terminated, truncated, {"fell": fell, "v": v, "x": x}
