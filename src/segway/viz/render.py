@@ -46,9 +46,9 @@ def render_rollout(
     plant = MuJoCoPlant(params, xml_path=xml_path)
 
     cam = mj.MjvCamera()
-    cam.type = mj.mjtCamera.mjCAMERA_TRACKING
-    cam.trackbodyid = mj.mj_name2id(plant.model, mj.mjtObj.mjOBJ_BODY, "base")
+    cam.type = mj.mjtCamera.mjCAMERA_FREE
     cam.distance, cam.elevation, cam.azimuth = distance, elevation, azimuth
+    cam.lookat = np.zeros(3)
 
     renderer = mj.Renderer(plant.model, height=height, width=width)
     frames: list[np.ndarray] = []
@@ -57,6 +57,7 @@ def render_rollout(
 
     def grab(plant: MuJoCoPlant, t: float) -> None:
         if counter["i"] % frame_every == 0:
+            cam.lookat[0] = plant.state[0]  # follow robot's x position
             renderer.update_scene(plant.data, camera=cam)
             frames.append(renderer.render().copy())
         counter["i"] += 1
