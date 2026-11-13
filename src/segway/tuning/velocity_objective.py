@@ -13,7 +13,8 @@ import numpy as np
 
 from ..config import RobotParams, SimConfig
 from ..controllers import build_controller
-from ..sim import Scenario, simulate
+from ..sim import Scenario
+from ..sim.mujoco_backend import simulate_mujoco_friction
 
 V_MAX: float = 2.0   # target speed [m/s]
 T_UP: float = 2.0    # step-up time [s]
@@ -74,7 +75,7 @@ def velocity_tracking_cost(
         ctrl = _Clipped(build_controller(controller_name, params, **kwargs), u_max)
     except Exception:
         return FALL_PENALTY
-    traj = simulate(params, ctrl, velocity_step_scenario(), SimConfig(duration=T_END))
+    traj, _ = simulate_mujoco_friction(params, ctrl, velocity_step_scenario(), SimConfig(duration=T_END))
     if traj.fell:
         return FALL_PENALTY
     v = traj.states[:, 1]

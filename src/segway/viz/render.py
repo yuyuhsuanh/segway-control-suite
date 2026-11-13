@@ -11,7 +11,7 @@ import numpy as np
 
 from ..config import RobotParams, SimConfig, TWIPParams
 from ..controllers.base import Controller
-from ..sim.mujoco_backend import MuJoCoPlant, simulate_mujoco
+from ..sim.mujoco_backend import MuJoCoPlant, simulate_mujoco, simulate_mujoco_friction
 from ..sim.scenarios import Scenario
 
 
@@ -63,6 +63,64 @@ def render_rollout(
         counter["i"] += 1
 
     simulate_mujoco(params, controller, scenario, sim, step_callback=grab, plant=plant, xml_path=xml_path)
+    renderer.close()
+
+    if path.suffix.lower() == ".gif":
+        imageio.mimsave(path, frames, duration=1.0 / fps, loop=0)
+    else:
+        imageio.mimsave(path, frames, fps=fps)
+    return str(path)
+
+
+def render_rollout_twip(
+    params: RobotParams,
+    controller: Controller,
+    scenario: Scenario | None = None,
+    sim: SimConfig | None = None,
+    path: str | Path = "rollout.gif",
+    width: int = 640,
+    height: int = 480,
+    fps: int = 30,
+    distance: float = 4.0,
+    elevation: float = -15.0,
+    azimuth: float = 90.0,
+    mu: float = 0.6,
+) -> str:
+    """Render a 1-D balance controller rollout using the real TWIP model (twip.xml, friction)."""
+    import imageio.v2 as imageio
+    import mujoco as mj
+    from ..config import TWIPParams
+    from ..sim.mujoco_twip import MuJoCoTWIP, TWIP_PATH
+
+    sim = sim or SimConfig()
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    twip_params = TWIPParams(base=params)
+    plant = MuJoCoTWIP(twip_params, xml_path=TWIP_PATH)
+    for i in range(plant.model.ngeom):
+        if plant.model.geom_contype[i]:
+            plant.model.geom_friction[i, 0] = mu
+
+    cam = mj.MjvCamera()
+    cam.type = mj.mjtCamera.mjCAMERA_FREE
+    cam.distance, cam.elevation, cam.azimuth = distance, elevation, azimuth
+    cam.lookat = np.zeros(3)
+
+    renderer = mj.Renderer(plant.model, height=height, width=width)
+    frames: list[np.ndarray] = []
+    frame_every = max(1, int(round(1.0 / (fps * sim.dt))))
+    counter = {"i": 0}
+
+    def grab(p, t):
+        if counter["i"] % frame_every == 0:
+            cam.lookat[0] = p.state[0]  # track x position
+            renderer.update_scene(p.data, camera=cam)
+            frames.append(renderer.render().copy())
+        counter["i"] += 1
+
+    simulate_mujoco_friction(params, controller, scenario, sim, mu=mu,
+                             step_callback=grab)
     renderer.close()
 
     if path.suffix.lower() == ".gif":

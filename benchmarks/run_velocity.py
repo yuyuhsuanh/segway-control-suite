@@ -26,7 +26,6 @@ import numpy as np
 
 from segway.config import SimConfig
 from segway.controllers import build_controller
-from segway.sim import simulate
 from segway.tuning.velocity_objective import (
     TRON1_PARAMS,
     T_END,
@@ -62,16 +61,19 @@ def _tune(name: str, n_trials: int) -> dict:
 
 
 def _run_and_score(name: str, kwargs: dict):
-    """Simulate and return (traj, t_accel, t_decel, rmse)."""
+    """Simulate in MuJoCo (real friction) and return (traj, t_accel, t_decel, rmse, tract)."""
+    from segway.sim.mujoco_backend import simulate_mujoco_friction
     ctrl = _Clipped(build_controller(name, TRON1_PARAMS, **kwargs), U_MAX)
     scen = velocity_step_scenario()
-    traj = simulate(TRON1_PARAMS, ctrl, scen, SimConfig(duration=T_END))
+    traj, tract = simulate_mujoco_friction(
+        TRON1_PARAMS, ctrl, scen, SimConfig(duration=T_END), mu=0.6
+    )
     v = traj.states[:, 1]
     from segway.tuning.velocity_objective import _v_des, V_MAX
     v_des = np.array([_v_des(t) for t in traj.t])
     rmse = float(np.sqrt(np.mean((v - v_des) ** 2)))
     t_accel, t_decel = transition_times(traj.t, v)
-    return traj, t_accel, t_decel, rmse
+    return traj, t_accel, t_decel, rmse, tract
 
 
 def _plot_single(name: str, traj, t_accel: float, t_decel: float) -> None:
@@ -111,43 +113,55 @@ def _plot_comparison(records: list[tuple]) -> None:
     import matplotlib.pyplot as plt
     from segway.tuning.velocity_objective import T_DOWN, T_UP, _v_des
 
-    fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    # Traction ratio from MuJoCo contact forces: |Fx_wheels| / (μ·Fz_wheels) ≤ 1 always.
+    fig, axes = plt.subplots(4, 1, figsize=(9, 10), sharex=True)
     t_ref = records[0][1].t
     v_des = np.array([_v_des(t) for t in t_ref])
 
+    for vline in (T_UP, T_DOWN):
+        for ax in axes:
+            ax.axvline(vline, color="gray", lw=0.8, ls=":")
+
     axes[0].plot(t_ref, v_des, "k--", lw=1.5, label="v_des", zorder=5)
-    axes[0].axvline(T_UP, color="gray", lw=0.8, ls=":")
-    axes[0].axvline(T_DOWN, color="gray", lw=0.8, ls=":")
-    for i, (name, traj, t_accel, t_decel, _fell) in enumerate(records):
+    for name, traj, _ta, _td, _fell, tract in records:
         axes[0].plot(traj.t, traj.states[:, 1], label=name)
-        axes[1].plot(traj.t, np.degrees(traj.states[:, 2]), label=name)
+        axes[1].plot(traj.t, traj.states[:, 0], label=name)
+        axes[2].plot(traj.t, np.degrees(traj.states[:, 2]), label=name)
+        axes[3].plot(traj.t, tract, label=name)
+
+    axes[3].axhline(1.0, color="red", lw=1.2, ls="--", label="slip limit (ratio=1)")
 
     axes[0].set_ylabel("velocity [m/s]")
     axes[0].legend(fontsize=9)
-    axes[0].set_title("All controllers — velocity tracking comparison")
-    axes[1].set_ylabel("tilt [°]")
-    axes[1].set_xlabel("time [s]")
+    axes[0].set_title("All controllers — velocity tracking (MuJoCo, μ=0.6)")
+    axes[1].set_ylabel("position [m]")
     axes[1].legend(fontsize=9)
+    axes[2].set_ylabel("tilt [°]")
+    axes[2].legend(fontsize=9)
+    axes[3].set_ylabel("|Fx_contact| / (μ·Fz)  [traction ratio]")
+    axes[3].set_xlabel("time [s]")
+    axes[3].legend(fontsize=9)
     fig.tight_layout()
     fig.savefig(RESULTS / "velocity_comparison.png", dpi=120)
     plt.close(fig)
 
 
 def _record_gif(name: str, kwargs: dict) -> Path | None:
-    """Render a MuJoCo GIF.  Returns None if mujoco/imageio unavailable."""
+    """Render a MuJoCo GIF using the real TWIP model (twip.xml, friction)."""
     try:
-        from segway.viz import render_rollout
+        from segway.viz.render import render_rollout_twip
     except ImportError:
         return None
     out = RESULTS / f"velocity_{name}.gif"
     try:
-        render_rollout(
+        render_rollout_twip(
             TRON1_PARAMS,
             _Clipped(build_controller(name, TRON1_PARAMS, **kwargs), U_MAX),
             velocity_step_scenario(),
             sim=SimConfig(duration=T_END),
             path=out,
             fps=30,
+            mu=0.6,
         )
     except Exception as exc:
         print(f"       [gif] skipped ({exc})")
@@ -182,9 +196,9 @@ def main(argv=None) -> int:
         best_kwargs = _tune(name, trials)
         gains[name] = best_kwargs
 
-        traj, t_accel, t_decel, rmse = _run_and_score(name, best_kwargs)
+        traj, t_accel, t_decel, rmse, tract = _run_and_score(name, best_kwargs)
         rows.append((name, t_accel, t_decel, rmse, traj.fell))
-        records.append((name, traj, t_accel, t_decel, traj.fell))
+        records.append((name, traj, t_accel, t_decel, traj.fell, tract))
         status = "FELL" if traj.fell else "ok"
         print(f"       T_accel={t_accel:.3f}s  T_decel={t_decel:.3f}s  "
               f"RMSE={rmse:.4f} m/s  [{status}]", flush=True)

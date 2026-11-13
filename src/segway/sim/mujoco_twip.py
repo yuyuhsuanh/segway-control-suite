@@ -76,6 +76,11 @@ class MuJoCoTWIP:
         # geometry: wheel radius + track + axle height
         m.geom_size[self._lwgeom][0] = r
         m.geom_size[self._rwgeom][0] = r
+        # Update broad-phase bounding radius after size change (MuJoCo caches this).
+        hl = float(m.geom_size[self._lwgeom][1])
+        rbound = float(np.sqrt(r ** 2 + hl ** 2))
+        m.geom_rbound[self._lwgeom] = rbound
+        m.geom_rbound[self._rwgeom] = rbound
         m.body_pos[self._lw] = [0.0, pole.track / 2.0, 0.0]
         m.body_pos[self._rw] = [0.0, -pole.track / 2.0, 0.0]
         m.body_pos[self._base] = [0.0, 0.0, r]

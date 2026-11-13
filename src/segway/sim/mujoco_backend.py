@@ -26,6 +26,7 @@ ASSET_PATH = _ASSETS / "segway.xml"
 # Elevated cart-pole geometry used for swing-up rendering (body can rotate without clipping
 # the floor). Same dynamics, same body/joint names — only the visualization differs.
 CARTPOLE_PATH = _ASSETS / "cartpole.xml"
+TWIP_PATH = _ASSETS / "twip.xml"
 
 
 class MuJoCoPlant:
@@ -177,3 +178,116 @@ def simulate_mujoco(
         scenario=scenario,
         controller_name=getattr(controller, "name", "unknown"),
     )
+
+
+def simulate_mujoco_friction(
+    params: RobotParams,
+    controller: Controller,
+    scenario: Scenario | None = None,
+    sim: SimConfig | None = None,
+    mu: float = 0.6,
+    step_callback=None,
+) -> Trajectory:
+    """1-D balance controller rollout in the TWIP MuJoCo model (real rolling-contact friction).
+
+    Unlike simulate_mujoco (cart-pole, no friction), this uses twip.xml where wheel torques
+    produce traction through frictional contact — slip occurs when |tau|/2 > mu*N_wheel*r.
+    Tuning should still be done on the analytic model (fast); use this only for evaluation.
+    """
+    from ..config import TWIPParams
+    from .mujoco_twip import MuJoCoTWIP
+
+    scenario = scenario or Scenario()
+    sim = sim or SimConfig()
+    controller.reset()
+
+    plant = MuJoCoTWIP(TWIPParams(base=params), xml_path=TWIP_PATH)
+    plant.model.opt.timestep = sim.dt
+
+    # Set sliding friction to mu on all contact-enabled geoms (wheels + floor).
+    for i in range(plant.model.ngeom):
+        if plant.model.geom_contype[i]:
+            plant.model.geom_friction[i, 0] = mu
+
+    # Map 1-D initial state [x, v, theta, theta_dot] -> 3-D state vector.
+    s0 = scenario.initial_state()
+    plant.reset(np.array([s0[0], 0.0, 0.0, s0[2], s0[1], 0.0, s0[3]]))
+
+    dt = sim.dt
+    n_steps = int(round(sim.duration / dt))
+    control_dt = sim.control_dt
+
+    # Body ids for contact-force extraction.
+    mj = plant._mj
+    lw_id, rw_id = plant._lw, plant._rw
+
+    ts: list[float] = []
+    xs: list[np.ndarray] = []
+    us: list[float] = []
+    traction_ratios: list[float] = []
+    u = 0.0
+    last_ctrl_t = -np.inf
+    fell = False
+
+    for i in range(n_steps + 1):
+        t = i * dt
+        ps = plant.state   # [x, y, psi, theta, v, psi_dot, theta_dot]
+        state = np.array([ps[0], ps[4], ps[3], ps[6]])  # [x, v, theta, theta_dot]
+
+        if abs(state[2]) > sim.fall_angle:
+            fell = True
+            break
+
+        if control_dt is None or (t - last_ctrl_t) >= control_dt - 1e-12:
+            u = controller.compute(state - scenario.reference_at(t), t)
+            last_ctrl_t = t
+
+        plant.apply((u / 2.0, u / 2.0))
+
+        if i < n_steps:
+            plant.step()
+
+        if step_callback is not None:
+            step_callback(plant, t)
+
+        if i % sim.record_every == 0:
+            ts.append(t)
+            xs.append(state.copy())
+            us.append(u)
+            # Sum contact forces over all wheel-floor contacts.
+            # mj_contactForce gives [f_normal, f_tan1, f_tan2, ...] in contact frame.
+            # Traction ratio = sqrt(tan1^2+tan2^2) / (mu*normal), capped at [0,1] by friction cone.
+            f_normal_sum = 0.0
+            f_tan_sum = 0.0
+            _cf = np.zeros(6)
+            d = plant.data
+            for ci in range(d.ncon):
+                c = d.contact[ci]
+                # Only count contacts involving the wheel bodies.
+                g1, g2 = int(c.geom[0]), int(c.geom[1])
+                b1 = int(plant.model.geom_bodyid[g1])
+                b2 = int(plant.model.geom_bodyid[g2])
+                if lw_id not in (b1, b2) and rw_id not in (b1, b2):
+                    continue
+                mj.mj_contactForce(plant.model, d, ci, _cf)
+                f_normal_sum += abs(_cf[0])
+                f_tan_sum += float(np.sqrt(_cf[1]**2 + _cf[2]**2))
+            ratio = (f_tan_sum / (mu * f_normal_sum)) if f_normal_sum > 1e-3 else 0.0
+            traction_ratios.append(min(ratio, 1.0))
+
+    if not ts:
+        ts.append(0.0)
+        xs.append(scenario.initial_state())
+        us.append(0.0)
+        traction_ratios.append(0.0)
+
+    traj = Trajectory(
+        t=np.asarray(ts),
+        states=np.asarray(xs),
+        controls=np.asarray(us),
+        fell=fell,
+        params=params,
+        scenario=scenario,
+        controller_name=getattr(controller, "name", "unknown"),
+    )
+    return traj, np.asarray(traction_ratios)
