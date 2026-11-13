@@ -27,13 +27,14 @@ import numpy as np
 from segway.config import SimConfig
 from segway.controllers import build_controller
 from segway.sim import simulate
-from segway.tuning.objective import flat_to_kwargs, search_bounds
 from segway.tuning.velocity_objective import (
     TRON1_PARAMS,
     T_END,
     U_MAX,
+    VELOCITY_BOUNDS,
     _Clipped,
     transition_times,
+    velocity_flat_to_kwargs,
     velocity_step_scenario,
     velocity_tracking_cost,
 )
@@ -47,17 +48,17 @@ def _tune(name: str, n_trials: int) -> dict:
     import optuna
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    bounds = search_bounds.get(name) or search_bounds["lqr"]  # mpc shares lqr bounds
+    bounds = VELOCITY_BOUNDS[name]
 
     def objective(trial):
         flat = {k: trial.suggest_float(k, lo, hi, log=log) for k, lo, hi, log in bounds}
-        kwargs = flat_to_kwargs(name, flat)
+        kwargs = velocity_flat_to_kwargs(name, flat)
         return velocity_tracking_cost(name, kwargs)
 
     study = optuna.create_study(direction="minimize",
                                 sampler=optuna.samplers.TPESampler(seed=0))
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
-    return flat_to_kwargs(name, study.best_params)
+    return velocity_flat_to_kwargs(name, study.best_params)
 
 
 def _run_and_score(name: str, kwargs: dict):

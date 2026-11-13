@@ -82,6 +82,26 @@ def velocity_tracking_cost(
     return float(np.sqrt(np.mean((v - v_des_arr) ** 2)))
 
 
+# Velocity-task-specific search bounds.
+# LQR/MPC: q0 (position penalty) fixed to 0 — robot is allowed to drift forward.
+# cascaded_pid: kx fixed to 0 — outer loop uses velocity error only, no position pull-back.
+VELOCITY_BOUNDS: dict[str, list[tuple]] = {
+    "lqr": [("q1", 0.1, 500, True), ("q2", 1.0, 2000, True),
+            ("q3", 0.1, 200, True), ("R", 1e-3, 10, True)],
+    "cascaded_pid": [("kp", 40, 400, False), ("kd", 5, 100, False),
+                     ("kv", -3.0, -0.05, False)],
+}
+VELOCITY_BOUNDS["mpc"] = VELOCITY_BOUNDS["lqr"]
+
+
+def velocity_flat_to_kwargs(name: str, flat: dict) -> dict:
+    if name in ("lqr", "mpc"):
+        return {"Q": [0.0, flat["q1"], flat["q2"], flat["q3"]], "R": flat["R"]}
+    if name == "cascaded_pid":
+        return {"kp": flat["kp"], "kd": flat["kd"], "kx": 0.0, "kv": flat["kv"]}
+    raise ValueError(f"no velocity bounds for {name!r}")
+
+
 def transition_times(traj_t: np.ndarray, traj_v: np.ndarray, tol: float = 0.1) -> tuple[float, float]:
     """Return (T_accel, T_decel): seconds to reach V_MAX and to stop, after each step command.
 
