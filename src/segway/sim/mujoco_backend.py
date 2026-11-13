@@ -122,7 +122,6 @@ def simulate_mujoco(
     plant.model.opt.timestep = sim.dt
     plant.reset(scenario.initial_state())
 
-    ref = scenario.reference_vec()
     dt = sim.dt
     n_steps = int(round(sim.duration / dt))
     control_dt = sim.control_dt
@@ -150,7 +149,7 @@ def simulate_mujoco(
             break
 
         if control_dt is None or (t - last_ctrl_t) >= control_dt - 1e-12:
-            u = controller.compute(state - ref, t)
+            u = controller.compute(state - scenario.reference_at(t), t)
             last_ctrl_t = t
         plant.apply(u)
 

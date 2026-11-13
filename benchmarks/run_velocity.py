@@ -73,7 +73,7 @@ def _run_and_score(name: str, kwargs: dict):
     return traj, t_accel, t_decel, rmse
 
 
-def _plot(name: str, traj, t_accel: float, t_decel: float) -> Path:
+def _plot_single(name: str, traj, t_accel: float, t_decel: float) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -86,26 +86,71 @@ def _plot(name: str, traj, t_accel: float, t_decel: float) -> Path:
     axes[0].plot(traj.t, v_des, "k--", label="v_des")
     axes[0].axvline(T_UP, color="gray", lw=0.8, ls=":")
     axes[0].axvline(T_DOWN, color="gray", lw=0.8, ls=":")
-    t_a_abs = T_UP + t_accel if not np.isinf(t_accel) else None
-    t_d_abs = T_DOWN + t_decel if not np.isinf(t_decel) else None
-    if t_a_abs:
-        axes[0].axvline(t_a_abs, color="C0", lw=1.0, ls="--",
+    if not np.isinf(t_accel):
+        axes[0].axvline(T_UP + t_accel, color="C0", lw=1.0, ls="--",
                         label=f"T_accel={t_accel:.2f}s")
-    if t_d_abs:
-        axes[0].axvline(t_d_abs, color="C1", lw=1.0, ls="--",
+    if not np.isinf(t_decel):
+        axes[0].axvline(T_DOWN + t_decel, color="C1", lw=1.0, ls="--",
                         label=f"T_decel={t_decel:.2f}s")
     axes[0].set_ylabel("velocity [m/s]")
     axes[0].legend(fontsize=8)
     axes[0].set_title(f"{name} — velocity tracking")
-
     axes[1].plot(traj.t, np.degrees(traj.states[:, 2]))
     axes[1].set_ylabel("tilt [°]")
     axes[1].set_xlabel("time [s]")
-
     fig.tight_layout()
-    out = RESULTS / f"velocity_{name}.png"
-    fig.savefig(out, dpi=120)
+    fig.savefig(RESULTS / f"velocity_{name}.png", dpi=120)
     plt.close(fig)
+
+
+def _plot_comparison(records: list[tuple]) -> None:
+    """Overlay all controllers' v-t traces on one figure."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from segway.tuning.velocity_objective import T_DOWN, T_UP, _v_des
+
+    fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    t_ref = records[0][1].t
+    v_des = np.array([_v_des(t) for t in t_ref])
+
+    axes[0].plot(t_ref, v_des, "k--", lw=1.5, label="v_des", zorder=5)
+    axes[0].axvline(T_UP, color="gray", lw=0.8, ls=":")
+    axes[0].axvline(T_DOWN, color="gray", lw=0.8, ls=":")
+    for i, (name, traj, t_accel, t_decel, _fell) in enumerate(records):
+        axes[0].plot(traj.t, traj.states[:, 1], label=name)
+        axes[1].plot(traj.t, np.degrees(traj.states[:, 2]), label=name)
+
+    axes[0].set_ylabel("velocity [m/s]")
+    axes[0].legend(fontsize=9)
+    axes[0].set_title("All controllers — velocity tracking comparison")
+    axes[1].set_ylabel("tilt [°]")
+    axes[1].set_xlabel("time [s]")
+    axes[1].legend(fontsize=9)
+    fig.tight_layout()
+    fig.savefig(RESULTS / "velocity_comparison.png", dpi=120)
+    plt.close(fig)
+
+
+def _record_gif(name: str, kwargs: dict) -> Path | None:
+    """Render a MuJoCo GIF.  Returns None if mujoco/imageio unavailable."""
+    try:
+        from segway.viz import render_rollout
+    except ImportError:
+        return None
+    out = RESULTS / f"velocity_{name}.gif"
+    try:
+        render_rollout(
+            TRON1_PARAMS,
+            _Clipped(build_controller(name, TRON1_PARAMS, **kwargs), U_MAX),
+            velocity_step_scenario(),
+            sim=SimConfig(duration=T_END),
+            path=out,
+            fps=30,
+        )
+    except Exception as exc:
+        print(f"       [gif] skipped ({exc})")
+        return None
     return out
 
 
@@ -120,7 +165,8 @@ def main(argv=None) -> int:
     RESULTS.mkdir(parents=True, exist_ok=True)
 
     names = [n for n in CONTROLLERS if not (args.no_mpc and n == "mpc")]
-    rows = []
+    rows = []       # (name, t_accel, t_decel, rmse, fell)
+    records = []    # (name, traj, t_accel, t_decel, fell) — for comparison plot
     gains: dict[str, dict] = {}
 
     for name in names:
@@ -137,12 +183,21 @@ def main(argv=None) -> int:
 
         traj, t_accel, t_decel, rmse = _run_and_score(name, best_kwargs)
         rows.append((name, t_accel, t_decel, rmse, traj.fell))
+        records.append((name, traj, t_accel, t_decel, traj.fell))
         status = "FELL" if traj.fell else "ok"
         print(f"       T_accel={t_accel:.3f}s  T_decel={t_decel:.3f}s  "
               f"RMSE={rmse:.4f} m/s  [{status}]", flush=True)
 
         if not traj.fell:
-            _plot(name, traj, t_accel, t_decel)
+            _plot_single(name, traj, t_accel, t_decel)
+            print(f"       [gif] recording {name} ...", flush=True)
+            gif = _record_gif(name, best_kwargs)
+            if gif:
+                print(f"       [gif] saved → {gif}", flush=True)
+
+    if records:
+        _plot_comparison(records)
+        print(f"Comparison plot → {RESULTS}/velocity_comparison.png")
 
     (RESULTS / "velocity_gains.json").write_text(json.dumps(gains, indent=2))
 
